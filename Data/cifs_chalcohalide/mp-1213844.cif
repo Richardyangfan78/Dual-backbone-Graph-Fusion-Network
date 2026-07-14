@@ -1,0 +1,50 @@
+# generated using pymatgen
+data_CeSCl
+_symmetry_space_group_name_H-M   'P 1'
+_cell_length_a   6.88042065
+_cell_length_b   6.99133139
+_cell_length_c   13.56780226
+_cell_angle_alpha   90.00000000
+_cell_angle_beta   90.00000000
+_cell_angle_gamma   90.00000000
+_symmetry_Int_Tables_number   1
+_chemical_formula_structural   CeSCl
+_chemical_formula_sum   'Ce8 S8 Cl8'
+_cell_volume   652.65607421
+_cell_formula_units_Z   8
+loop_
+ _symmetry_equiv_pos_site_id
+ _symmetry_equiv_pos_as_xyz
+  1  'x, y, z'
+loop_
+ _atom_site_type_symbol
+ _atom_site_label
+ _atom_site_symmetry_multiplicity
+ _atom_site_fract_x
+ _atom_site_fract_y
+ _atom_site_fract_z
+ _atom_site_occupancy
+  Ce  Ce0  1  0.25900952  0.96534173  0.90062224  1
+  Ce  Ce1  1  0.74099048  0.03465827  0.09937776  1
+  Ce  Ce2  1  0.24099048  0.46534173  0.09937776  1
+  Ce  Ce3  1  0.74099048  0.53465827  0.40062224  1
+  Ce  Ce4  1  0.75900952  0.53465827  0.90062224  1
+  Ce  Ce5  1  0.25900952  0.46534173  0.59937776  1
+  Ce  Ce6  1  0.75900952  0.03465827  0.59937776  1
+  Ce  Ce7  1  0.24099048  0.96534173  0.40062224  1
+  S  S8  1  -0.00067195  0.74285358  0.52365824  1
+  S  S9  1  0.00067195  0.25714642  0.47634176  1
+  S  S10  1  0.50067195  0.24285358  0.47634176  1
+  S  S11  1  0.00067195  0.75714642  0.02365824  1
+  S  S12  1  0.49932805  0.75714642  0.52365824  1
+  S  S13  1  -0.00067195  0.24285358  0.97634176  1
+  S  S14  1  0.49932805  0.25714642  0.97634176  1
+  S  S15  1  0.50067195  0.74285358  0.02365824  1
+  Cl  Cl16  1  0.13289212  0.62308317  0.78740178  1
+  Cl  Cl17  1  0.86710788  0.37691683  0.21259822  1
+  Cl  Cl18  1  0.36710788  0.12308317  0.21259822  1
+  Cl  Cl19  1  0.86710788  0.87691683  0.28740178  1
+  Cl  Cl20  1  0.63289212  0.87691683  0.78740178  1
+  Cl  Cl21  1  0.13289212  0.12308317  0.71259822  1
+  Cl  Cl22  1  0.63289212  0.37691683  0.71259822  1
+  Cl  Cl23  1  0.36710788  0.62308317  0.28740178  1

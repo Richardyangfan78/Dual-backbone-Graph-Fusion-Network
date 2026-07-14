@@ -1,0 +1,132 @@
+{
+  "dataset": "Data/Inorganic_datasets",
+  "k_folds": 5,
+  "n_samples": 1768,
+  "name": "mace_alignn_aligned_splits",
+  "seed": 42,
+  "stratification": "merged_gap_type_x_eh_class; gap_type 2 -> 1; eh_class = 0 if ehull < 0.1 else 1",
+  "summary": [
+    {
+      "fold": 0,
+      "test": 354,
+      "test_labels": {
+        "0": 67,
+        "1": 12,
+        "2": 204,
+        "3": 71
+      },
+      "train": 1202,
+      "train_labels": {
+        "0": 223,
+        "1": 42,
+        "2": 677,
+        "3": 260
+      },
+      "val": 212,
+      "val_labels": {
+        "0": 45,
+        "1": 8,
+        "2": 136,
+        "3": 23
+      }
+    },
+    {
+      "fold": 1,
+      "test": 354,
+      "test_labels": {
+        "0": 67,
+        "1": 13,
+        "2": 203,
+        "3": 71
+      },
+      "train": 1202,
+      "train_labels": {
+        "0": 223,
+        "1": 41,
+        "2": 678,
+        "3": 260
+      },
+      "val": 212,
+      "val_labels": {
+        "0": 45,
+        "1": 8,
+        "2": 136,
+        "3": 23
+      }
+    },
+    {
+      "fold": 2,
+      "test": 354,
+      "test_labels": {
+        "0": 67,
+        "1": 13,
+        "2": 203,
+        "3": 71
+      },
+      "train": 1202,
+      "train_labels": {
+        "0": 223,
+        "1": 41,
+        "2": 678,
+        "3": 260
+      },
+      "val": 212,
+      "val_labels": {
+        "0": 45,
+        "1": 8,
+        "2": 136,
+        "3": 23
+      }
+    },
+    {
+      "fold": 3,
+      "test": 353,
+      "test_labels": {
+        "0": 67,
+        "1": 12,
+        "2": 203,
+        "3": 71
+      },
+      "train": 1203,
+      "train_labels": {
+        "0": 223,
+        "1": 42,
+        "2": 678,
+        "3": 260
+      },
+      "val": 212,
+      "val_labels": {
+        "0": 45,
+        "1": 8,
+        "2": 136,
+        "3": 23
+      }
+    },
+    {
+      "fold": 4,
+      "test": 353,
+      "test_labels": {
+        "0": 67,
+        "1": 12,
+        "2": 204,
+        "3": 70
+      },
+      "train": 1203,
+      "train_labels": {
+        "0": 223,
+        "1": 42,
+        "2": 677,
+        "3": 261
+      },
+      "val": 212,
+      "val_labels": {
+        "0": 45,
+        "1": 8,
+        "2": 136,
+        "3": 23
+      }
+    }
+  ],
+  "test_union_count": 1768,
+  "val_ratio": 0.15
+}

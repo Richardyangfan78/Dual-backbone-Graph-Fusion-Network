@@ -1,0 +1,4 @@
+task,metric,higher_is_better,best_traditional_model,best_traditional_value,mace_alignn_value,mace_alignn_std,absolute_delta_mace_minus_traditional,relative_error_reduction_for_bandgap
+bandgap,Bandgap MAE (eV),False,ExtraTrees,0.47018282212974577,0.22177979999999997,0.013709366336924544,-0.2484030221297458,0.5283115640094559
+gap_type,Gap-type macro-F1,True,LightGBM,0.684335542929293,0.847636,0.02406973070061233,0.16330045707070695,
+stability,Stability macro-F1,True,XGBoost,0.8441268379651852,0.9533173999999999,0.013186069188351763,0.1091905620348147,
