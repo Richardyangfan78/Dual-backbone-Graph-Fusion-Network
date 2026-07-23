@@ -25,7 +25,6 @@ The latest reporting run is recorded in `MODEL_STATUS.md`:
 | Model | BG MAE | GT F1 | EH F1 |
 |---|---:|---:|---:|
 | MACE+ALIGNN | 0.2218 eV | 0.8476 | 0.9533 |
-| MACE+M3GNet | 0.2587 eV | 0.8537 | 0.9576 |
 
 The aligned split files are in `Data/Inorganic_datasets/splits_mace_alignn/`.
 
