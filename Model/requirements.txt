@@ -1,0 +1,8 @@
+numpy==2.4.4
+scipy==1.17.1
+scikit-learn==1.8.0
+pymatgen==2025.10.7
+ase==3.28.0
+torch==2.5.1
+torch-geometric==2.7.0
+mace-torch==0.3.13

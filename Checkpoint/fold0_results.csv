@@ -1,0 +1,7 @@
+metric,value
+val_loss,0.544115
+bg_mae,0.212203
+gt_acc,0.920904
+gt_f1,0.883820
+eh_acc,0.968927
+eh_f1,0.956900
