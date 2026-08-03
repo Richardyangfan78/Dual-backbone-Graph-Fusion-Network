@@ -8,15 +8,6 @@ The workflow combines MACE and ALIGNN crystal encoders through a learned gated
 fusion module. A shared multitask predictor estimates the band gap, gap type
 (direct versus indirect/metal), and thermodynamic stability class.
 
-### Repository Overview
-
-The release supports the following tasks:
-
-- Recompute the archived five-fold metrics from out-of-fold predictions
-- Download and SHA-256 verify the five final integrated DBGFN checkpoints
-- Evaluate each checkpoint on its fixed test partition
-- Run five-checkpoint ensemble inference on new crystal structures
-- Inspect performance figures, gate analysis, and screened candidates
 
 ### Directory Structure
 
@@ -94,27 +85,6 @@ A successful run ends with:
 PASS: archived OOF predictions reproduce all reported fold metrics.
 ```
 
-### Evaluate the Final Checkpoints
-
-Download and verify the five final DBGFN checkpoints:
-
-```bash
-python 01-checkpoints/download.py
-```
-
-Evaluate all fixed test folds:
-
-```bash
-python 03-code/evaluate.py --device cuda
-```
-
-Use `--device cpu` when CUDA is unavailable. On its first run, the evaluator
-extracts the 1,768 CIF structures, obtains the public MACE-MP-0 small model
-needed to instantiate the architecture, and builds the MACE and ALIGNN graph
-caches. It then loads the complete state from each final checkpoint. The
-recomputed metrics are written to
-`04-results/01-performance/reproduced_checkpoint_metrics.csv`.
-
 ### Predict New Structures
 
 Place CIF, VASP, POSCAR, or `.poscar` files in one directory, then run:
@@ -128,21 +98,6 @@ The command evaluates all five checkpoints and reports the ensemble mean and
 standard deviation of the predicted band gap, gap type, stability class, and
 the direct-gap/stable/0.5–1.1 eV screening decision.
 
-### Checkpoint Evaluation Scope
-
-This is a checkpoint-evaluation and inference release. It distributes the five
-final integrated model states; it does not reproduce the original optimization
-trajectory from initialization. Each checkpoint contains both crystal
-encoders, the gated fusion module, the shared trunk, the prediction heads, and
-the band-gap normalization statistics.
-
-An exact material-ID audit of the supervised MACE initialization artifacts
-associated with the original training run identified 48 of the 1,768
-downstream evaluation materials in that initialization manifest. The affected
-IDs are listed by fold in
-`02-data/dataset/initialization_overlap_ids.csv`. Consequently, the archived
-numbers reproduce the released checkpoints but should not be interpreted as
-strict unseen-material holdout estimates.
 
 ### Contact Information
 
