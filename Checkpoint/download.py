@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download and verify DBGFN checkpoint assets from the GitHub release."""
+"""Download and verify the five final DBGFN checkpoints."""
 
 from __future__ import annotations
 
@@ -40,34 +40,6 @@ FINAL = {
         "06a32edfb9471af7aed198bdce771612329ca527b234392bd77402a10b91f162",
     ),
 }
-
-INITIALIZERS = {
-    "mace_pretrained_best.pt": (
-        "mace_pretrained_best.pt",
-        "665a16daf36243a4021fcba8917b163cf122574aa6229da2f90857698c173aed",
-    ),
-    "ALIGNN/fold0_best.pt": (
-        "alignn_fold0_best.pt",
-        "7a973170b12c0acf634fd088e43a6dec8834926660ac302d8e22d8f2526ed98e",
-    ),
-    "ALIGNN/fold1_best.pt": (
-        "alignn_fold1_best.pt",
-        "76eb4cba1808132c67a0e2759584743bfce6d893b5185635569f92af3869e5af",
-    ),
-    "ALIGNN/fold2_best.pt": (
-        "alignn_fold2_best.pt",
-        "f32e5968b5c40c1718788b9a76304d47b266efa71f7dc43bb302b4a5ede422e9",
-    ),
-    "ALIGNN/fold3_best.pt": (
-        "alignn_fold3_best.pt",
-        "b0a5884f8f061c04893a7369337c3c7549544442050ae3d388928392a88fc97e",
-    ),
-    "ALIGNN/fold4_best.pt": (
-        "alignn_fold4_best.pt",
-        "23ec83c962072925987025aed9a86eb494f8778e42f168de243b0fc32a471531",
-    ),
-}
-
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -113,19 +85,12 @@ def fetch(relative_path: str, asset_name: str, expected_hash: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--training-initializers",
-        action="store_true",
-        help="also download the MACE and fold-specific ALIGNN initialization weights",
+    parser = argparse.ArgumentParser(
+        description="Download and verify the five final integrated DBGFN checkpoints."
     )
-    args = parser.parse_args()
-
-    assets = dict(FINAL)
-    if args.training_initializers:
-        assets.update(INITIALIZERS)
+    parser.parse_args()
     try:
-        for relative_path, (asset_name, expected_hash) in assets.items():
+        for relative_path, (asset_name, expected_hash) in FINAL.items():
             fetch(relative_path, asset_name, expected_hash)
     except Exception as error:
         print(f"ERROR: {error}", file=sys.stderr)
