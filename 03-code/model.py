@@ -1,305 +1,612 @@
+"""DBGFN checkpoint model and command-line predictor.
+
+Run ``python 03-code/model.py INPUT_DIRECTORY OUTPUT.csv`` to load the five
+released checkpoints and make ensemble predictions for CIF, VASP, or POSCAR
+structures. Graph preparation lives in :mod:`data`.
 """
-Dual-backbone MACE + ALIGNN fusion model for chalcohalide prediction.
 
-Plan A architecture:
-  - MACE backbone (256-dim equivariant per-atom features) → attention pooling
-  - ALIGNN backbone (256-dim angular/topological features) → mean pooling
-  - Gated fusion: learns to combine local (MACE) and global (ALIGNN) info
-  - 3 task heads: BG (regression), GT (classification), EH (classification)
+from __future__ import annotations
 
-Key insight: MACE excels at BG (local bonding), ALIGNN excels at GT
-(global topology). Fusion combines both strengths.
-"""
-from __future__ import print_function, division
-
+import argparse
+import copy
+import csv
 import math
+import sys
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as functional
 from torch_geometric.utils import scatter
-from typing import Dict
 
-from model_mace_mt import (
-    MACEFeatureExtractor, AttentionPooling, BandgapHead, CosineClassifier
-)
-from model_alignn_pyg import (
-    ALIGNNMultiTaskPyG, EdgeGatedConv, ALIGNNLayer
-)
+from data import file_to_model_input, find_structure_files
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+N_FOLDS = 5
+METAL_BAND_GAP_THRESHOLD = 0.05
+SCREEN_BAND_GAP_MIN = 0.5
+SCREEN_BAND_GAP_MAX = 1.1
+
+
+class MACEFeatureExtractor(nn.Module):
+    """Return the concatenated node representations from MACE interactions."""
+
+    def __init__(self, mace_model):
+        super().__init__()
+        self.node_embedding = mace_model.node_embedding
+        self.radial_embedding = mace_model.radial_embedding
+        self.spherical_harmonics = mace_model.spherical_harmonics
+        self.interactions = mace_model.interactions
+        self.products = mace_model.products
+        self.atomic_numbers = mace_model.atomic_numbers
+        self.n_interactions = len(self.interactions)
+        self.per_layer_dim = 128  # MACE-MP-0 small
+        self.out_dim = self.per_layer_dim * self.n_interactions
+
+    def forward(self, data: dict[str, torch.Tensor]) -> torch.Tensor:
+        from mace.modules.utils import prepare_graph
+
+        graph = prepare_graph(data)
+        edge_attributes = self.spherical_harmonics(graph.vectors)
+        edge_features = self.radial_embedding(
+            graph.lengths,
+            data["node_attrs"],
+            data["edge_index"],
+            self.atomic_numbers,
+        )
+        node_features = self.node_embedding(data["node_attrs"])
+        layer_features = []
+        for index, (interaction, product) in enumerate(
+            zip(self.interactions, self.products)
+        ):
+            interaction_output = interaction(
+                node_attrs=data["node_attrs"],
+                node_feats=node_features,
+                edge_attrs=edge_attributes,
+                edge_feats=edge_features,
+                edge_index=data["edge_index"],
+                first_layer=index == 0,
+            )
+            node_features, skip_connection = interaction_output[:2]
+            node_features = product(
+                node_feats=node_features,
+                sc=skip_connection,
+                node_attrs=data["node_attrs"],
+            )
+            layer_features.append(node_features)
+        return torch.cat(layer_features, dim=-1)
+
+
+class AttentionPooling(nn.Module):
+    """Multi-head attention pooling from atom features to crystal features."""
+
+    def __init__(self, input_dim: int, n_heads: int = 8):
+        super().__init__()
+        self.gates = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(input_dim, input_dim // 4),
+                    nn.Softplus(),
+                    nn.Linear(input_dim // 4, 1),
+                )
+                for _ in range(n_heads)
+            ]
+        )
+        self.combine = nn.Linear(input_dim * n_heads, input_dim)
+
+    def forward(
+        self,
+        atom_features: torch.Tensor,
+        batch: torch.Tensor,
+        num_graphs: int,
+    ) -> torch.Tensor:
+        heads = []
+        for gate in self.gates:
+            scores = gate(atom_features)
+            pooled = []
+            for graph_index in range(num_graphs):
+                mask = batch == graph_index
+                features = atom_features[mask]
+                weights = functional.softmax(scores[mask], dim=0)
+                pooled.append((weights * features).sum(dim=0, keepdim=True))
+            heads.append(torch.cat(pooled, dim=0))
+        return self.combine(torch.cat(heads, dim=-1))
+
+
+class BandGapHead(nn.Module):
+    """Residual regression head used by the released DBGFN checkpoints."""
+
+    def __init__(self, hidden_dim: int, dropout: float):
+        super().__init__()
+        middle = hidden_dim // 2
+        quarter = hidden_dim // 4
+        self.fc1 = nn.Linear(hidden_dim, middle)
+        self.bn1 = nn.BatchNorm1d(middle)
+        self.fc2 = nn.Linear(middle, middle)
+        self.bn2 = nn.BatchNorm1d(middle)
+        self.fc3 = nn.Linear(middle, quarter)
+        self.bn3 = nn.BatchNorm1d(quarter)
+        self.fc_out = nn.Linear(quarter, 1)
+        self.skip1 = nn.Linear(hidden_dim, middle)
+        self.skip2 = nn.Linear(middle, quarter)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        hidden = self.drop(functional.silu(self.bn1(self.fc1(features))))
+        hidden = self.drop(functional.silu(self.bn2(self.fc2(hidden))))
+        hidden = hidden + self.skip1(features)
+        skip = self.skip2(hidden)
+        hidden = self.drop(functional.silu(self.bn3(self.fc3(hidden))))
+        return self.fc_out(hidden + skip)
+
+
+class CosineClassifier(nn.Module):
+    """Cosine-similarity classification head used for gap-type prediction."""
+
+    def __init__(self, input_dim: int, n_classes: int, initial_temperature: float):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(n_classes, input_dim))
+        self.log_temp = nn.Parameter(torch.tensor(math.log(initial_temperature)))
+        nn.init.xavier_normal_(self.weight)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        temperature = self.log_temp.exp().clamp(min=0.01, max=1.0)
+        normalized_features = functional.normalize(features, dim=1)
+        normalized_weights = functional.normalize(self.weight, dim=1)
+        return functional.log_softmax(
+            normalized_features @ normalized_weights.T / temperature,
+            dim=1,
+        )
+
+
+class EdgeGatedConv(nn.Module):
+    """ALIGNN edge-gated convolution that updates node and edge features."""
+
+    def __init__(
+        self,
+        node_dim: int,
+        edge_dim: int,
+        output_node_dim: int,
+        output_edge_dim: int,
+    ):
+        super().__init__()
+        input_dim = 2 * node_dim + edge_dim
+        self.gate_fc = nn.Linear(input_dim, output_edge_dim)
+        self.msg_fc = nn.Linear(input_dim, output_edge_dim)
+        self.node_fc = nn.Linear(node_dim + output_edge_dim, output_node_dim)
+        self.node_norm = nn.LayerNorm(output_node_dim)
+        self.node_res = (
+            nn.Linear(node_dim, output_node_dim, bias=False)
+            if node_dim != output_node_dim
+            else nn.Identity()
+        )
+        self.edge_res = (
+            nn.Linear(edge_dim, output_edge_dim, bias=False)
+            if edge_dim != output_edge_dim
+            else nn.Identity()
+        )
+
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        source, destination = edge_index
+        concatenated = torch.cat(
+            [node_features[source], node_features[destination], edge_features],
+            dim=-1,
+        )
+        gate = torch.sigmoid(self.gate_fc(concatenated))
+        message = functional.softplus(self.msg_fc(concatenated))
+        updated_edges = self.edge_res(edge_features) + gate * message
+        aggregate = scatter(
+            updated_edges,
+            destination,
+            dim=0,
+            dim_size=node_features.size(0),
+            reduce="sum",
+        )
+        updated_nodes = self.node_norm(
+            self.node_res(node_features)
+            + functional.silu(
+                self.node_fc(torch.cat([node_features, aggregate], dim=-1))
+            )
+        )
+        return updated_nodes, updated_edges
+
+
+class ALIGNNLayer(nn.Module):
+    """Line-graph update followed by a crystal-graph update."""
+
+    def __init__(self, node_dim: int, edge_dim: int, angle_dim: int):
+        super().__init__()
+        self.line_conv = EdgeGatedConv(edge_dim, angle_dim, edge_dim, angle_dim)
+        self.crystal_conv = EdgeGatedConv(node_dim, edge_dim, node_dim, edge_dim)
+
+    def forward(
+        self,
+        atom_features: torch.Tensor,
+        bond_features: torch.Tensor,
+        angle_features: torch.Tensor,
+        crystal_edge_index: torch.Tensor,
+        line_edge_index: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        bond_features, angle_features = self.line_conv(
+            bond_features, line_edge_index, angle_features
+        )
+        atom_features, _ = self.crystal_conv(
+            atom_features, crystal_edge_index, bond_features
+        )
+        return atom_features, bond_features, angle_features
 
 
 class ALIGNNFeatureExtractor(nn.Module):
-    """Extract per-crystal features from ALIGNN backbone (strip task heads).
+    """The ALIGNN encoder portion stored inside the fused DBGFN model."""
 
-    Runs: atom_proj → bond_proj → angle_proj → ALIGNN layers → GCN layers
-          → global mean pooling → [B, hidden_dim]
-    """
-
-    def __init__(self, alignn_model: ALIGNNMultiTaskPyG):
+    def __init__(
+        self,
+        hidden_dim: int = 256,
+        n_alignn_layers: int = 4,
+        n_gcn_layers: int = 4,
+        dropout: float = 0.3,
+    ):
         super().__init__()
-        self.atom_proj = alignn_model.atom_proj
-        self.bond_proj = alignn_model.bond_proj
-        self.angle_proj = alignn_model.angle_proj
-        self.alignn_layers = alignn_model.alignn_layers
-        self.gcn_layers = alignn_model.gcn_layers
-        self.drop = alignn_model.drop
-        self.out_dim = 256  # hidden_dim
+        self.atom_proj = nn.Sequential(
+            nn.Linear(94, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()
+        )
+        self.bond_proj = nn.Sequential(
+            nn.Linear(80, hidden_dim), nn.LayerNorm(hidden_dim), nn.SiLU()
+        )
+        self.angle_proj = nn.Sequential(
+            nn.Linear(40, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.SiLU(),
+        )
+        self.alignn_layers = nn.ModuleList(
+            [ALIGNNLayer(hidden_dim, hidden_dim, hidden_dim // 2)
+             for _ in range(n_alignn_layers)]
+        )
+        self.gcn_layers = nn.ModuleList(
+            [EdgeGatedConv(hidden_dim, hidden_dim, hidden_dim, hidden_dim)
+             for _ in range(n_gcn_layers)]
+        )
+        self.drop = nn.Dropout(dropout)
+        self.out_dim = hidden_dim
 
-    def forward(self, x, edge_index, edge_attr,
-                line_edge_index, line_attr, batch, num_graphs):
-        """
-        Args:
-            x: [N, 94] atom one-hot features
-            edge_index: [2, E] crystal graph edges
-            edge_attr: [E, 80] RBF distance features
-            line_edge_index: [2, T] line graph edges
-            line_attr: [T, 40] RBF angle features
-            batch: [N] graph assignment
-            num_graphs: number of graphs
-        Returns:
-            crys_fea: [B, 256] crystal-level features
-        """
-        atom_x = self.atom_proj(x)
-        bond_x = self.bond_proj(edge_attr)
-        angle_x = self.angle_proj(line_attr)
-
+    def forward(
+        self,
+        atom_features: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attributes: torch.Tensor,
+        line_edge_index: torch.Tensor,
+        line_attributes: torch.Tensor,
+        batch: torch.Tensor,
+        num_graphs: int,
+    ) -> torch.Tensor:
+        atom_features = self.atom_proj(atom_features)
+        bond_features = self.bond_proj(edge_attributes)
+        angle_features = self.angle_proj(line_attributes)
         for layer in self.alignn_layers:
-            atom_x, bond_x, angle_x = layer(
-                atom_x, bond_x, angle_x, edge_index, line_edge_index
+            atom_features, bond_features, angle_features = layer(
+                atom_features,
+                bond_features,
+                angle_features,
+                edge_index,
+                line_edge_index,
             )
-
         for layer in self.gcn_layers:
-            atom_x, bond_x = layer(atom_x, edge_index, bond_x)
-
-        # Global mean pooling
-        h = scatter(atom_x, batch, dim=0, dim_size=num_graphs, reduce="mean")
-        return self.drop(h)
+            atom_features, bond_features = layer(
+                atom_features, edge_index, bond_features
+            )
+        return self.drop(
+            scatter(
+                atom_features,
+                batch,
+                dim=0,
+                dim_size=num_graphs,
+                reduce="mean",
+            )
+        )
 
 
 class GatedFusion(nn.Module):
-    """Gated fusion of two feature streams.
+    """Fuse MACE and ALIGNN crystal representations with a learned gate."""
 
-    gate = sigmoid(W_gate * [f_mace, f_alignn])
-    fused = gate * f_mace + (1 - gate) * f_alignn
-    Then project through a residual MLP.
-    """
-
-    def __init__(self, dim, dropout=0.2):
+    def __init__(self, dimension: int, dropout: float):
         super().__init__()
-        self.gate = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.Sigmoid(),
-        )
+        self.gate = nn.Sequential(nn.Linear(dimension * 2, dimension), nn.Sigmoid())
         self.proj = nn.Sequential(
-            nn.Linear(dim * 2, dim),
-            nn.LayerNorm(dim),
+            nn.Linear(dimension * 2, dimension),
+            nn.LayerNorm(dimension),
             nn.SiLU(),
             nn.Dropout(dropout),
         )
-        self.residual = nn.Linear(dim * 2, dim)
+        # Kept for exact checkpoint compatibility; the released forward pass
+        # uses the gated and projected branches above.
+        self.residual = nn.Linear(dimension * 2, dimension)
 
-    def forward(self, f_mace, f_alignn):
-        """
-        Args:
-            f_mace: [B, D] MACE crystal features
-            f_alignn: [B, D] ALIGNN crystal features
-        Returns:
-            fused: [B, D] fused features
-        """
-        concat = torch.cat([f_mace, f_alignn], dim=1)  # [B, 2D]
-        g = self.gate(concat)  # [B, D]
-        gated = g * f_mace + (1 - g) * f_alignn  # [B, D]
-        projected = self.proj(concat)  # [B, D]
-        return gated + projected  # residual
+    def forward(
+        self, mace_features: torch.Tensor, alignn_features: torch.Tensor
+    ) -> torch.Tensor:
+        concatenated = torch.cat([mace_features, alignn_features], dim=1)
+        gate = self.gate(concatenated)
+        gated = gate * mace_features + (1 - gate) * alignn_features
+        return gated + self.proj(concatenated)
 
 
-class DualBackboneMultiTask(nn.Module):
-    """
-    MACE + ALIGNN dual backbone with gated fusion + multi-task heads.
+class DBGFNModel(nn.Module):
+    """Released dual-backbone graph-fusion architecture."""
 
-    Architecture:
-      MACE backbone → attn pooling → [B, 256]
-      ALIGNN backbone → mean pooling → [B, 256]
-      → Gated fusion → [B, 256]
-      → Trunk → 3 task heads
-    """
-
-    def __init__(self, mace_model, alignn_model,
-                 h_fea_len=256, n_gap_classes=2, n_eh_classes=2,
-                 dropout=0.3, n_attn_heads=8,
-                 use_cosine_classifier=True, cosine_temp=0.1):
+    def __init__(
+        self,
+        mace_model,
+        hidden_dim: int = 256,
+        dropout: float = 0.3,
+        n_attention_heads: int = 8,
+    ):
         super().__init__()
-        self.n_eh_classes = n_eh_classes
         self.register_buffer("cond_weight", torch.tensor(0.0))
-
-        # MACE backbone + attention pooling
         self.mace_backbone = MACEFeatureExtractor(mace_model)
-        mace_dim = self.mace_backbone.out_dim  # 256
-        self.mace_pool = AttentionPooling(mace_dim, n_attn_heads)
-
-        # ALIGNN backbone (extracts features, strips task heads)
-        self.alignn_backbone = ALIGNNFeatureExtractor(alignn_model)
-        alignn_dim = self.alignn_backbone.out_dim  # 256
-
-        assert mace_dim == alignn_dim, \
-            f"Feature dim mismatch: MACE={mace_dim}, ALIGNN={alignn_dim}"
-
-        # Gated fusion
-        self.fusion = GatedFusion(mace_dim, dropout=dropout * 0.5)
-
-        # Trunk: project fused features
-        self.proj = nn.Linear(mace_dim, h_fea_len)
-        self.trunk_bn = nn.BatchNorm1d(h_fea_len)
-        self.act = nn.SiLU()
+        self.mace_pool = AttentionPooling(
+            self.mace_backbone.out_dim, n_attention_heads
+        )
+        self.alignn_backbone = ALIGNNFeatureExtractor(dropout=dropout)
+        if self.mace_backbone.out_dim != self.alignn_backbone.out_dim:
+            raise ValueError(
+                "Released checkpoints require MACE-MP-0 small "
+                f"(MACE={self.mace_backbone.out_dim}, "
+                f"ALIGNN={self.alignn_backbone.out_dim})."
+            )
+        self.fusion = GatedFusion(self.mace_backbone.out_dim, dropout * 0.5)
+        self.proj = nn.Linear(self.mace_backbone.out_dim, hidden_dim)
+        self.trunk_bn = nn.BatchNorm1d(hidden_dim)
         self.drop = nn.Dropout(dropout)
-
-        # Head 1: Bandgap regression
-        self.head_bg = BandgapHead(h_fea_len, dropout=dropout)
-
-        # Head 3: EH stability (binary)
+        self.head_bg = BandGapHead(hidden_dim, dropout)
         self.head_eh = nn.Sequential(
-            nn.Linear(h_fea_len, h_fea_len // 2),
-            nn.BatchNorm1d(h_fea_len // 2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
             nn.SiLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(h_fea_len // 2, h_fea_len // 4),
-            nn.BatchNorm1d(h_fea_len // 4),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.BatchNorm1d(hidden_dim // 4),
             nn.SiLU(),
-            nn.Dropout(p=dropout * 0.5),
-            nn.Linear(h_fea_len // 4, n_eh_classes),
+            nn.Dropout(dropout * 0.5),
+            nn.Linear(hidden_dim // 4, 2),
             nn.LogSoftmax(dim=1),
         )
-
-        # Head 2: Gap type (conditioned on BG + EH with annealing)
-        self.gt_proj = nn.Linear(h_fea_len + 1 + n_eh_classes, h_fea_len)
-        gt_hidden = h_fea_len // 2
+        self.gt_proj = nn.Linear(hidden_dim + 3, hidden_dim)
         self.gt_layers = nn.Sequential(
-            nn.BatchNorm1d(h_fea_len),
+            nn.BatchNorm1d(hidden_dim),
             nn.SiLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(h_fea_len, gt_hidden),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
             nn.SiLU(),
-            nn.Dropout(p=dropout * 0.5),
+            nn.Dropout(dropout * 0.5),
         )
-        if use_cosine_classifier:
-            self.gt_classifier = CosineClassifier(gt_hidden, n_gap_classes,
-                                                  init_temp=cosine_temp)
-        else:
-            self.gt_classifier = nn.Sequential(
-                nn.Linear(gt_hidden, n_gap_classes),
-                nn.LogSoftmax(dim=1),
-            )
+        self.gt_classifier = CosineClassifier(hidden_dim // 2, 2, 0.1)
 
-    def set_cond_weight(self, w: float):
-        self.cond_weight.fill_(min(max(w, 0.0), 1.0))
+    def set_cond_weight(self, value: float) -> None:
+        self.cond_weight.fill_(min(max(value, 0.0), 1.0))
 
     def forward(self, data):
-        """
-        Args:
-            data: DualGraphData batch with both MACE and ALIGNN fields
-        Returns:
-            bg, gt, eh predictions
-        """
-        batch_idx = data.batch
-        num_graphs = int(batch_idx.max().item()) + 1
-
-        # ── MACE branch ──
-        # Build dict manually to avoid PyG Data.node_attrs() method collision
-        mace_dict = {
+        batch = data.batch
+        num_graphs = int(batch.max().item()) + 1
+        mace_input = {
             "positions": data.positions,
-            "node_attrs": data.mace_node_attrs,  # renamed in DualGraphData
+            "node_attrs": data.mace_node_attrs,
             "edge_index": data.edge_index,
             "shifts": data.shifts,
             "unit_shifts": data.unit_shifts,
             "cell": data.cell,
-            "batch": data.batch,
-            "ptr": data.ptr,  # needed by MACE prepare_graph
+            "batch": batch,
+            "ptr": data.ptr,
         }
         if hasattr(data, "pbc"):
-            mace_dict["pbc"] = data.pbc
+            mace_input["pbc"] = data.pbc
         if hasattr(data, "head"):
-            mace_dict["head"] = data.head
-        node_feats_mace = self.mace_backbone(mace_dict)  # [N, 256]
-        f_mace = self.mace_pool(node_feats_mace, batch_idx, num_graphs)
-
-        # ── ALIGNN branch ──
-        f_alignn = self.alignn_backbone(
-            x=data.alignn_x,
-            edge_index=data.alignn_edge_index,
-            edge_attr=data.alignn_edge_attr,
-            line_edge_index=data.alignn_line_edge_index,
-            line_attr=data.alignn_line_attr,
-            batch=batch_idx,
-            num_graphs=num_graphs,
+            mace_input["head"] = data.head
+        mace_features = self.mace_pool(
+            self.mace_backbone(mace_input), batch, num_graphs
         )
+        alignn_features = self.alignn_backbone(
+            data.alignn_x,
+            data.alignn_edge_index,
+            data.alignn_edge_attr,
+            data.alignn_line_edge_index,
+            data.alignn_line_attr,
+            batch,
+            num_graphs,
+        )
+        features = self.drop(
+            functional.silu(
+                self.trunk_bn(self.proj(self.fusion(mace_features, alignn_features)))
+            )
+        )
+        band_gap = self.head_bg(features)
+        stability = self.head_eh(features)
+        conditioning_weight = self.cond_weight.item()
+        gap_type_input = self.gt_proj(
+            torch.cat(
+                [
+                    features,
+                    band_gap.detach() * conditioning_weight,
+                    stability.exp().detach() * conditioning_weight,
+                ],
+                dim=1,
+            )
+        )
+        gap_type = self.gt_classifier(self.gt_layers(gap_type_input))
+        return band_gap, gap_type, stability
 
-        # ── Fusion ──
-        fused = self.fusion(f_mace, f_alignn)  # [B, 256]
 
-        # ── Trunk ──
-        crys_fea = self.drop(self.act(self.trunk_bn(self.proj(fused))))
+def _gap_type_name(prediction_index: int, band_gap: float) -> str:
+    if prediction_index == 1 or band_gap < METAL_BAND_GAP_THRESHOLD:
+        return "Indirect"
+    return "Direct"
 
-        # ── Task heads ──
-        bg = self.head_bg(crys_fea)
-        eh = self.head_eh(crys_fea)
-        eh_probs = eh.exp()
 
-        # GT conditioned on BG + EH with annealing
-        cw = self.cond_weight.item()
-        bg_cond = bg.detach() * cw
-        eh_cond = eh_probs.detach() * cw
-        gt_in = self.gt_proj(torch.cat([crys_fea, bg_cond, eh_cond], dim=1))
-        gt_hidden = self.gt_layers(gt_in)
-        gt = self.gt_classifier(gt_hidden)
+class DBGFNPredictor:
+    """Five-checkpoint DBGFN ensemble for direct prediction of new structures."""
 
-        return bg, gt, eh
+    def __init__(
+        self,
+        checkpoint_dir: str | Path = PROJECT_ROOT / "01-checkpoints",
+        device: str | torch.device | None = None,
+        mace_model_name: str = "small",
+    ):
+        self.device = torch.device(
+            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self.checkpoint_dir = Path(checkpoint_dir)
+        from mace.calculators import mace_mp
+        from mace.tools import AtomicNumberTable
 
-    # ─── Parameter groups for differential learning rates ───
+        calculator = mace_mp(
+            model=mace_model_name,
+            default_dtype="float32",
+            device=str(self.device),
+        )
+        self.mace_base = calculator.models[0]
+        self.atomic_number_table = AtomicNumberTable(
+            [int(number) for number in self.mace_base.atomic_numbers]
+        )
+        self.models, self.normalizers = self._load_ensemble()
 
-    def get_mace_backbone_params(self):
-        return list(self.mace_backbone.parameters())
+    def _load_ensemble(self):
+        models, normalizers = [], []
+        for fold in range(N_FOLDS):
+            path = self.checkpoint_dir / f"fold{fold}_best.pt"
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Missing checkpoint: {path}. Run 01-checkpoints/download.py first."
+                )
+            checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+            model = DBGFNModel(copy.deepcopy(self.mace_base))
+            model.load_state_dict(checkpoint["model_state_dict"])
+            model.set_cond_weight(1.0)
+            models.append(model.to(self.device).eval())
+            normalizers.append(
+                (
+                    float(checkpoint["normalizer_mean"]),
+                    float(checkpoint["normalizer_std"]),
+                )
+            )
+        return models, normalizers
 
-    def get_alignn_backbone_params(self):
-        return list(self.alignn_backbone.parameters())
+    @torch.no_grad()
+    def predict_graph(self, graph) -> dict[str, float | str]:
+        graph = graph.to(self.device)
+        band_gaps, gap_type_probabilities, stability_probabilities = [], [], []
+        for model, (mean, std) in zip(self.models, self.normalizers):
+            band_gap, gap_type, stability = model(graph)
+            band_gaps.append(float(np.expm1(band_gap.item() * std + mean)))
+            gap_type_probabilities.append(
+                gap_type.exp().squeeze(0).cpu().numpy()
+            )
+            stability_probabilities.append(
+                stability.exp().squeeze(0).cpu().numpy()
+            )
+        mean_band_gap = float(np.mean(band_gaps))
+        gap_type_index = int(np.mean(gap_type_probabilities, axis=0).argmax())
+        stability_index = int(np.mean(stability_probabilities, axis=0).argmax())
+        gap_type = _gap_type_name(gap_type_index, mean_band_gap)
+        stability = "Stable" if stability_index == 0 else "Unstable"
+        screening_pass = (
+            gap_type == "Direct"
+            and SCREEN_BAND_GAP_MIN <= mean_band_gap <= SCREEN_BAND_GAP_MAX
+            and stability == "Stable"
+        )
+        return {
+            "bg_type": gap_type,
+            "bg_eV": round(mean_band_gap, 4),
+            "bg_std_eV": round(float(np.std(band_gaps)), 4),
+            "ehull": stability,
+            "screen_pass": "Yes" if screening_pass else "No",
+        }
 
-    def get_head_params(self):
-        """All non-backbone parameters (fusion + trunk + heads)."""
-        mace_ids = {id(p) for p in self.mace_backbone.parameters()}
-        alignn_ids = {id(p) for p in self.alignn_backbone.parameters()}
-        backbone_ids = mace_ids | alignn_ids
-        return [p for p in self.parameters() if id(p) not in backbone_ids]
+    def predict_file(self, path: str | Path) -> dict[str, str | float]:
+        structure_id, formula, graph = file_to_model_input(
+            path, self.atomic_number_table
+        )
+        return {
+            "structure_id": structure_id,
+            "source_file": Path(path).name,
+            "source_path": str(Path(path).resolve()),
+            "formula": formula,
+            **self.predict_graph(graph),
+        }
 
-    def freeze_mace_backbone(self):
-        for p in self.mace_backbone.parameters():
-            p.requires_grad = False
 
-    def freeze_alignn_backbone(self):
-        for p in self.alignn_backbone.parameters():
-            p.requires_grad = False
+def predict_directory(
+    input_directory: str | Path,
+    output_csv: str | Path,
+    checkpoint_dir: str | Path = PROJECT_ROOT / "01-checkpoints",
+    device: str | torch.device | None = None,
+    mace_model_name: str = "small",
+) -> tuple[list[dict[str, str | float]], list[tuple[Path, Exception]]]:
+    """Run the full five-model ensemble and save predictions to CSV."""
 
-    def unfreeze_mace_backbone(self, last_n_layers=None):
-        if last_n_layers is None:
-            for p in self.mace_backbone.parameters():
-                p.requires_grad = True
-        else:
-            n = len(self.mace_backbone.interactions)
-            for block in list(self.mace_backbone.interactions)[max(0, n - last_n_layers):]:
-                for p in block.parameters():
-                    p.requires_grad = True
-            for block in list(self.mace_backbone.products)[max(0, n - last_n_layers):]:
-                for p in block.parameters():
-                    p.requires_grad = True
+    files = find_structure_files(input_directory)
+    if not files:
+        raise FileNotFoundError(f"No CIF, VASP, or POSCAR files found in {input_directory}")
+    predictor = DBGFNPredictor(checkpoint_dir, device, mace_model_name)
+    rows, failures = [], []
+    for path in files:
+        try:
+            rows.append(predictor.predict_file(path))
+        except Exception as error:  # Continue to report all malformed structures.
+            failures.append((path, error))
+    if not rows:
+        raise RuntimeError("No structure could be converted and predicted.")
 
-    def unfreeze_alignn_backbone(self, last_n_layers=None):
-        if last_n_layers is None:
-            for p in self.alignn_backbone.parameters():
-                p.requires_grad = True
-        else:
-            # Unfreeze last N GCN layers + last N ALIGNN layers
-            n_gcn = len(self.alignn_backbone.gcn_layers)
-            for block in list(self.alignn_backbone.gcn_layers)[max(0, n_gcn - last_n_layers):]:
-                for p in block.parameters():
-                    p.requires_grad = True
-            n_aln = len(self.alignn_backbone.alignn_layers)
-            for block in list(self.alignn_backbone.alignn_layers)[max(0, n_aln - last_n_layers):]:
-                for p in block.parameters():
-                    p.requires_grad = True
+    destination = Path(output_csv)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows, failures
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Predict new crystal structures with the released DBGFN ensemble."
+    )
+    parser.add_argument("input_directory", help="Directory containing CIF, VASP, or POSCAR files")
+    parser.add_argument("output_csv", help="Destination CSV for ensemble predictions")
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=PROJECT_ROOT / "01-checkpoints",
+        type=Path,
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda" if torch.cuda.is_available() else "cpu",
+    )
+    parser.add_argument("--mace-model", default="small")
+    args = parser.parse_args()
+    try:
+        rows, failures = predict_directory(
+            args.input_directory,
+            args.output_csv,
+            args.checkpoint_dir,
+            args.device,
+            args.mace_model,
+        )
+    except Exception as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Saved {len(rows)} predictions to {args.output_csv}")
+    if failures:
+        for path, error in failures:
+            print(f"SKIPPED {path.name}: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

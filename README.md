@@ -13,6 +13,7 @@ fusion module. A shared multitask predictor estimates the band gap, gap type
 
 ```text
 ├── README.md
+├── requirements.txt
 │
 ├── 01-checkpoints/
 │   ├── download.py
@@ -27,13 +28,8 @@ fusion module. A shared multitask predictor estimates the band gap, gap type
 │       └── splits_mace_alignn/
 │
 ├── 03-code/
-│   ├── model_dual_backbone.py
-│   ├── model_mace_mt.py
-│   ├── model_alignn_pyg.py
-│   ├── evaluate.py
-│   ├── predict.py
-│   ├── reproduce_metrics.py
-│   └── requirements.txt
+│   ├── data.py
+│   └── model.py
 │
 └── 04-results/
     ├── 01-performance/
@@ -51,7 +47,7 @@ cd Dual-backbone-Graph-Fusion-Network
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r 03-code/requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 On Windows PowerShell, activate the environment with:
@@ -60,29 +56,10 @@ On Windows PowerShell, activate the environment with:
 .\.venv\Scripts\Activate.ps1
 ```
 
-### Reproduce the Archived Metrics
-
-The lightweight route recomputes all metrics from the archived out-of-fold
-predictions and verifies them against the five fold result files:
+### Download Checkpoints
 
 ```bash
-python 03-code/reproduce_metrics.py
-```
-
-The expected five-fold means are:
-
-| Metric | Mean |
-|---|---:|
-| Band-gap MAE | 0.221780 eV |
-| Gap-type accuracy | 0.889694 |
-| Gap-type macro-F1 | 0.847636 |
-| Stability accuracy | 0.966619 |
-| Stability macro-F1 | 0.953317 |
-
-A successful run ends with:
-
-```text
-PASS: archived OOF predictions reproduce all reported fold metrics.
+python 01-checkpoints/download.py
 ```
 
 ### Predict New Structures
@@ -90,13 +67,15 @@ PASS: archived OOF predictions reproduce all reported fold metrics.
 Place CIF, VASP, POSCAR, or `.poscar` files in one directory, then run:
 
 ```bash
-python 03-code/predict.py path/to/structures \
+python 03-code/model.py path/to/structures \
   04-results/predictions.csv --device cuda
 ```
 
-The command evaluates all five checkpoints and reports the ensemble mean and
-standard deviation of the predicted band gap, gap type, stability class, and
-the direct-gap/stable/0.5–1.1 eV screening decision.
+`data.py` is called automatically to transform each structure into the MACE and
+ALIGNN graph inputs. `model.py` loads all five checkpoints, produces the
+checkpoint-dependent embeddings, and reports the ensemble mean and standard
+deviation of band gap, gap type, stability class, and the
+direct-gap/stable/0.5–1.1 eV screening decision.
 
 
 ### Contact Information
