@@ -1,49 +1,45 @@
-# Dual-backbone Graph Fusion Network for Chalcohalide Prediction
+# Dual-backbone Graph Fusion Network (DBGFN)
 
-This repository contains the released model checkpoints, code, data, and
-results supporting the Dual-backbone Graph Fusion Network (DBGFN) study of
-chalcohalide property prediction and candidate screening.
+Inference package for chalcohalide crystal screening. DBGFN combines a
+pretrained MACE encoder with an ALIGNN encoder through gated feature fusion to
+predict:
 
-The workflow combines MACE and ALIGNN crystal encoders through a learned gated
-fusion module. A shared multitask predictor estimates the band gap, gap type
-(direct versus indirect/metal), and thermodynamic stability class.
+- band gap (eV);
+- gap type (`Direct` or `Indirect`, with metallic predictions treated as
+  indirect); and
+- thermodynamic stability class (`Stable` or `Unstable`).
 
+This local version is an **inference-only release**. It loads five released
+DBGFN checkpoints and reports their ensemble prediction for new crystal
+structures. Training, fixed-split evaluation, and archived-metric reproduction
+scripts are intentionally not included in `03-code`.
 
-### Directory Structure
+## Repository layout
 
 ```text
 ├── README.md
 ├── requirements.txt
-│
 ├── 01-checkpoints/
-│   ├── download.py
-│   ├── SHA256SUMS.txt
-│   └── fold{0..4}_results.csv
-│
-├── 02-data/
-│   └── dataset/
-│       ├── id_prop.csv
-│       ├── structures.tar.gz
-│       ├── initialization_overlap_ids.csv
-│       └── splits_mace_alignn/
-│
-├── 03-code/
-│   ├── data.py
-│   └── model.py
-│
-└── 04-results/
-    ├── 01-performance/
-    ├── 02-gate-analysis/
-    └── 03-screening/
+│   ├── download.py              # download and SHA-256 verify the five checkpoints
+│   └── SHA256SUMS.txt
+├── 02-data/dataset/
+│   ├── id_prop.csv              # 1,768 reference material labels
+│   ├── structures.tar.gz        # 1,768 reference CIF files, kept compressed
+│   └── splits_mace_alignn/      # archived five-fold split metadata
+└── 03-code/
+    ├── data.py                  # structure file → MACE + ALIGNN graph inputs
+    └── model.py                 # DBGFN architecture, checkpoint loading, prediction CLI
 ```
 
-### Environment Setup
+`02-data/dataset` is reference data from the release. It is not needed to
+predict a new directory of structures. In particular, `model.py` does not use
+`id_prop.csv`, the archived CIF package, or the split files during inference.
 
-Run all commands from the repository root.
+## Installation
+
+Run from the repository root.
 
 ```bash
-git clone https://github.com/Richardyangfan78/Dual-backbone-Graph-Fusion-Network.git
-cd Dual-backbone-Graph-Fusion-Network
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -56,30 +52,96 @@ On Windows PowerShell, activate the environment with:
 .\.venv\Scripts\Activate.ps1
 ```
 
-### Download Checkpoints
+The released model expects `mace-torch==0.3.13` and the MACE-MP-0 `small`
+backbone specified in `requirements.txt`.
+
+## Download checkpoints
+
+The checkpoint binaries are not committed to the repository. Download them
+once; the script verifies every file against the included SHA-256 hashes.
 
 ```bash
 python 01-checkpoints/download.py
 ```
 
-### Predict New Structures
+This creates the following ignored files in `01-checkpoints/`:
 
-Place CIF, VASP, POSCAR, or `.poscar` files in one directory, then run:
-
-```bash
-python 03-code/model.py path/to/structures \
-  04-results/predictions.csv --device cuda
+```text
+fold0_best.pt  fold1_best.pt  fold2_best.pt  fold3_best.pt  fold4_best.pt
 ```
 
-`data.py` is called automatically to transform each structure into the MACE and
-ALIGNN graph inputs. `model.py` loads all five checkpoints, produces the
-checkpoint-dependent embeddings, and reports the ensemble mean and standard
-deviation of band gap, gap type, stability class, and the
-direct-gap/stable/0.5–1.1 eV screening decision.
+## Predict new structures
 
+Place CIF, VASP, POSCAR, or `.poscar` files directly in one input directory.
+The search is not recursive.
 
-### Contact Information
+```bash
+python 03-code/model.py path/to/structures 04-results/predictions.csv --device cuda
+```
 
-For questions about the repository, please open a GitHub issue or contact the
-repository maintainer through the
-[project page](https://github.com/Richardyangfan78/Dual-backbone-Graph-Fusion-Network).
+Use `--device cpu` when CUDA is unavailable. The first run may download the
+public MACE-MP-0 `small` base model needed to construct the checkpoint
+architecture.
+
+Optional arguments:
+
+```text
+--checkpoint-dir PATH   Directory containing fold0_best.pt … fold4_best.pt
+--device DEVICE         PyTorch device, for example cuda, cuda:0, or cpu
+--mace-model NAME       MACE base model name; use small for the released checkpoints
+```
+
+The command runs all five checkpoints. It does not silently fall back to a
+smaller ensemble if a checkpoint is unavailable.
+
+### Output CSV
+
+The destination directory is created automatically. Each successfully
+processed input file produces one row with:
+
+```text
+structure_id, source_file, source_path, formula,
+bg_type, bg_eV, bg_std_eV, ehull, screen_pass
+```
+
+- `bg_eV` is the five-checkpoint mean predicted band gap.
+- `bg_std_eV` is the standard deviation across the five band-gap predictions.
+- `ehull` is a predicted stability **class**, not a numerical energy-above-hull
+  value.
+- `screen_pass` is `Yes` only when the prediction is direct, stable, and has
+  `0.5 ≤ bg_eV ≤ 1.1`.
+
+If an individual structure cannot be parsed or converted, valid rows are still
+written and the program exits with a non-zero status after listing skipped
+files. This makes partial outputs visible to automated workflows.
+
+## How the two source files work
+
+```text
+structure file
+  └── data.py
+        ├── MACE periodic atom/edge graph
+        └── ALIGNN atom, bond, and line graph
+              └── model.py
+                    ├── MACE + ALIGNN learned embeddings
+                    ├── gated DBGFN fusion
+                    └── five-checkpoint ensemble prediction
+```
+
+The learned embeddings are produced in `model.py` because they depend on the
+checkpoint weights. `data.py` prepares the deterministic graph inputs required
+by both encoders and is called automatically by the prediction command.
+
+## Reference data
+
+`id_prop.csv` contains the released material IDs and labels in the form:
+
+```text
+material_id, bandgap_eV, gap_type, e_hull_eV_per_atom
+```
+
+The compressed `structures.tar.gz` contains 1,768 CIF files corresponding to
+these reference rows. The fifteen text files in `splits_mace_alignn/` record
+the archived train/validation/test membership for the five folds. They are
+provided as release provenance, not as required inputs for new-structure
+inference.
