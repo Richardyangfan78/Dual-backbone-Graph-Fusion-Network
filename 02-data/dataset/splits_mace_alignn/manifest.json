@@ -1,5 +1,5 @@
 {
-  "dataset": "Data/Inorganic_datasets",
+  "dataset": "02-data/dataset",
   "k_folds": 5,
   "n_samples": 1768,
   "name": "mace_alignn_aligned_splits",

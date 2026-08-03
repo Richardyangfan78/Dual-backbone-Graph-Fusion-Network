@@ -1,0 +1,18 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+
+# Downloaded checkpoints
+01-checkpoints/*.pt
+01-checkpoints/*.part
+
+# Generated graph caches and extracted structures
+02-data/dataset/cifs/
+02-data/dataset/mace_cached_graphs/
+02-data/dataset/alignn_cached_graphs/
+02-data/dataset/crystal_cached_graphs/
+
+# Generated evaluation and prediction files
+04-results/01-performance/reproduced_checkpoint_metrics.csv
+04-results/predictions.csv

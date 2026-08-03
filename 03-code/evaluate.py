@@ -132,9 +132,14 @@ def evaluate_fold(model, loader, mean: float, std: float, device):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", type=Path, default=ROOT / "Data" / "Dataset")
-    parser.add_argument("--checkpoint-dir", type=Path, default=ROOT / "Checkpoint")
-    parser.add_argument("--output", type=Path, default=ROOT / "Results" / "reproduced_checkpoint_metrics.csv")
+    parser.add_argument("--data-dir", type=Path, default=ROOT / "02-data" / "dataset")
+    parser.add_argument("--checkpoint-dir", type=Path, default=ROOT / "01-checkpoints")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "04-results" / "01-performance"
+        / "reproduced_checkpoint_metrics.csv",
+    )
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=0)
@@ -168,7 +173,7 @@ def main() -> None:
         checkpoint_path = args.checkpoint_dir / f"fold{fold}_best.pt"
         if not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"Missing {checkpoint_path}; run python Checkpoint/download.py"
+                f"Missing {checkpoint_path}; run python 01-checkpoints/download.py"
             )
         _, _, test_indices = stratified_kfold_split(dataset, fold=fold, seed=42)
         loader = DataLoader(

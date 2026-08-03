@@ -55,11 +55,11 @@ def main() -> int:
     parser.add_argument(
         "--predictions",
         type=Path,
-        default=ROOT / "Results" / "Performance"
+        default=ROOT / "04-results" / "01-performance"
         / "six_model_oof_predictions_best_bg_mace_alignn.csv",
     )
     parser.add_argument(
-        "--checkpoint-dir", type=Path, default=ROOT / "Checkpoint"
+        "--checkpoint-dir", type=Path, default=ROOT / "01-checkpoints"
     )
     parser.add_argument("--tolerance", type=float, default=1e-5)
     args = parser.parse_args()

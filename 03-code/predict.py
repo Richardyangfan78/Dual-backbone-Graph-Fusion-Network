@@ -170,8 +170,8 @@ def main():
 
     project = DEFAULT_PROJECT
     ckpt_dir = Path(args.checkpoint_dir or
-                    project / "Checkpoint").resolve()
-    sys.path.insert(0, str(project / "Model"))
+                    project / "01-checkpoints").resolve()
+    sys.path.insert(0, str(project / "03-code"))
 
     device = torch.device(args.device)
 
