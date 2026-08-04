@@ -128,16 +128,13 @@ candidate structures shipped in `02-data/dataset/Prediction.zip`. One row per
 structure, ordered by formula:
 
 ```text
-formula, bg_type, bg_eV, bg_std_eV, ehull, screen_pass, source
+formula, bg_type, bg_eV, bg_std_eV, ehull, screen_pass
 ```
 
-The prediction columns carry the same meaning as the inference output described
-above. Two columns differ from a fresh `model.py` run:
-
-- the `structure_id`, `source_file`, and `source_path` provenance columns are
-  dropped, because `formula` already identifies each row uniquely here;
-- `source` records the model that produced the row, `dual_backbone_inorg` for
-  every entry in this file.
+The columns carry the same meaning as the inference output described above. The
+`structure_id`, `source_file`, and `source_path` provenance columns of a fresh
+`model.py` run are dropped here, because `formula` already identifies each row
+uniquely in this file.
 
 Of the 12,018 candidates, **453 have `screen_pass = Yes`**, that is a direct and
 stable prediction with `0.5 ≤ bg_eV ≤ 1.1`. Those 453 are the structures taken
