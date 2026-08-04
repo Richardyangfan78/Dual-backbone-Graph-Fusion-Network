@@ -25,10 +25,13 @@ scripts are intentionally not included in `03-code`.
 ├── 02-data/dataset/
 │   ├── id_prop.csv              # 1,768 reference material labels
 │   ├── structures.tar.gz        # 1,768 reference CIF files, kept compressed
+│   ├── Prediction.zip           # 12,018 screened candidate CIF files
 │   └── splits_mace_alignn/      # archived five-fold split metadata
-└── 03-code/
-    ├── data.py                  # structure file → MACE + ALIGNN graph inputs
-    └── model.py                 # DBGFN architecture, checkpoint loading, prediction CLI
+├── 03-code/
+│   ├── data.py                  # structure file → MACE + ALIGNN graph inputs
+│   └── model.py                 # DBGFN architecture, checkpoint loading, prediction CLI
+└── 04-results/
+    └── Results.csv              # published screening predictions for the 12,018 candidates
 ```
 
 `02-data/dataset` is reference data from the release. It is not needed to
@@ -117,6 +120,28 @@ bg_type, bg_eV, bg_std_eV, ehull, screen_pass
 If an individual structure cannot be parsed or converted, valid rows are still
 written and the program exits with a non-zero status after listing skipped
 files. This makes partial outputs visible to automated workflows.
+
+## Screening results
+
+`04-results/Results.csv` holds the published DBGFN predictions for the 12,018
+candidate structures shipped in `02-data/dataset/Prediction.zip`. One row per
+structure, ordered by formula:
+
+```text
+formula, bg_type, bg_eV, bg_std_eV, ehull, screen_pass, source
+```
+
+The prediction columns carry the same meaning as the inference output described
+above. Two columns differ from a fresh `model.py` run:
+
+- the `structure_id`, `source_file`, and `source_path` provenance columns are
+  dropped, because `formula` already identifies each row uniquely here;
+- `source` records the model that produced the row, `dual_backbone_inorg` for
+  every entry in this file.
+
+Of the 12,018 candidates, **453 have `screen_pass = Yes`**, that is a direct and
+stable prediction with `0.5 ≤ bg_eV ≤ 1.1`. Those 453 are the structures taken
+forward to DFT confirmation.
 
 ## How the two source files work
 
