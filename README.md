@@ -60,7 +60,8 @@ backbone specified in `requirements.txt`.
 The checkpoint binaries are not committed to the repository. Download them
 once; the script verifies every file against the included SHA-256 hashes.
 The five assets in the `v1.0.0-reproducibility` GitHub Release are the
-official pre-ALIGNN-split five-fold ensemble used for the manuscript screening.
+official **DBGFN manuscript-screening five-fold ensemble** used for the
+reported screening results. It remains a MACE+ALIGNN dual-backbone model.
 
 ```bash
 python 01-checkpoints/download.py
