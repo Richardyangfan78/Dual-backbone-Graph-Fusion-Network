@@ -483,7 +483,11 @@ class DBGFNPredictor:
                 raise FileNotFoundError(
                     f"Missing checkpoint: {path}. Run 01-checkpoints/download.py first."
                 )
-            checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+            # The released training checkpoints include normalisation metadata
+            # serialised as NumPy scalars.  PyTorch's ``weights_only`` loader
+            # rejects those objects, so checkpoints supplied by the user must
+            # be loaded as trusted artifacts.
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             model = DBGFNModel(copy.deepcopy(self.mace_base))
             model.load_state_dict(checkpoint["model_state_dict"])
             model.set_cond_weight(1.0)

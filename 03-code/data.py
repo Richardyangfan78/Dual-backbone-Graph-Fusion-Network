@@ -156,13 +156,18 @@ def _build_mace_graph(atoms, atomic_number_table) -> DualGraphData:
         "unit_shifts",
         "cell",
         "pbc",
-        "head",
         "weight",
         "energy_weight",
         "forces_weight",
     ):
         if key in fields:
             graph[key] = fields[key]
+    if "head" in fields:
+        # ``prepare_graph`` indexes heads with the per-atom batch vector, so
+        # a single-structure graph requires a one-element head tensor rather
+        # than the scalar emitted by ``AtomicData``.
+        head = fields["head"]
+        graph.head = head.unsqueeze(0) if head.dim() == 0 else head
     graph.mace_node_attrs = fields["node_attrs"]
     graph.num_nodes = fields["positions"].shape[0]
     return graph
