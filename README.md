@@ -24,8 +24,8 @@ scripts are intentionally not included in `03-code`.
 │   └── SHA256SUMS.txt
 ├── 02-data/dataset/
 │   ├── id_prop.csv              # 1,768 reference material labels
-│   ├── structures.tar.gz        # 1,768 reference CIF files, kept compressed
-│   ├── Prediction.zip           # 12,018 screened candidate CIF files
+│   ├── structures.tar.gz        # 1,768 CIF files collected from Material Project
+│   ├── Prediction.zip           # 12,018 MLIP relaxed candidate CIF files
 │   └── splits_mace_alignn/      # archived five-fold split metadata
 ├── 03-code/
 │   ├── data.py                  # structure file → MACE + ALIGNN graph inputs
