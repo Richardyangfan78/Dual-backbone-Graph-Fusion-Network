@@ -26,7 +26,7 @@ scripts are intentionally not included in `03-code`.
 │   ├── id_prop.csv              # 1,768 reference material labels
 │   ├── structures.tar.gz        # 1,768 CIF files collected from Material Project
 │   ├── Prediction.zip           # 12,018 MLIP relaxed candidate CIF files
-│   └── splits_mace_alignn/      # archived five-fold split metadata
+│   └── splits/                  # archived five-fold split metadata
 ├── 03-code/
 │   ├── data.py                  # structure file → MACE + ALIGNN graph inputs
 │   └── model.py                 # DBGFN architecture, checkpoint loading, prediction CLI
@@ -166,7 +166,7 @@ material_id, bandgap_eV, gap_type, e_hull_eV_per_atom
 ```
 
 The compressed `structures.tar.gz` contains 1,768 CIF files corresponding to
-these reference rows. The fifteen text files in `splits_mace_alignn/` record
+these reference rows. The fifteen text files in `splits/` record
 the archived train/validation/test membership for the five folds. They are
 provided as release provenance, not as required inputs for new-structure
 inference.
