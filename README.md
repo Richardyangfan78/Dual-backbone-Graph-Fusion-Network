@@ -31,7 +31,7 @@ scripts are intentionally not included in `03-code`.
 │   ├── data.py                  # structure file → MACE + ALIGNN graph inputs
 │   └── model.py                 # DBGFN architecture, checkpoint loading, prediction CLI
 └── 04-results/
-    └── Results.csv              # published screening predictions for the 12,018 candidates
+    └── Results.csv              # Predictions for the 12,018 candidates
 ```
 
 `02-data/dataset` is reference data from the release. It is not needed to
